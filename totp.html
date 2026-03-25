@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TOTP 验证码</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+SC:wght@400;600&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    background: #0f0f1a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Noto Sans SC', sans-serif;
+    background-image: radial-gradient(ellipse at 20% 50%, #1a0533 0%, transparent 60%),
+                      radial-gradient(ellipse at 80% 20%, #001a33 0%, transparent 60%);
+  }
+
+  .card {
+    background: #16162a;
+    border: 1px solid #2a2a4a;
+    border-radius: 20px;
+    padding: 36px 32px;
+    width: 360px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  }
+
+  .title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #8080b0;
+    margin-bottom: 24px;
+    letter-spacing: 0.04em;
+  }
+
+  label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: #5a5a7a;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  input[type=text] {
+    width: 100%;
+    background: #0f0f1e;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    color: #c0c0e0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    padding: 12px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+    margin-bottom: 28px;
+  }
+  input[type=text]:focus { border-color: #5050b0; }
+  input[type=text]::placeholder { color: #2e2e50; }
+
+  .code-area {
+    background: #0f0f1e;
+    border: 1px solid #2a2a4a;
+    border-radius: 14px;
+    padding: 24px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    position: relative;
+  }
+  .code-area:hover { border-color: #4040a0; }
+
+  .copy-hint {
+    position: absolute;
+    top: 9px; right: 14px;
+    font-size: 11px;
+    color: #3a3a60;
+    transition: color 0.2s;
+  }
+  .code-area:hover .copy-hint { color: #7070a0; }
+
+  .code-digits {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    user-select: none;
+    transition: color 0.3s;
+  }
+  .code-digits.idle     { color: #2a2a4a; }
+  .code-digits.fresh    { color: #60d0a0; }
+  .code-digits.warning  { color: #e0a030; }
+  .code-digits.error    { color: #e05050; font-size: 14px; letter-spacing: 0; }
+
+  .ring-wrap {
+    position: relative;
+    width: 54px; height: 54px;
+    flex-shrink: 0;
+  }
+  .ring-wrap svg { transform: rotate(-90deg); }
+  .ring-bg { stroke: #1e1e38; }
+  .ring-fg {
+    stroke: #60d0a0;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.95s linear, stroke 0.3s;
+  }
+  .ring-fg.warning { stroke: #e0a030; }
+  .ring-text {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px; font-weight: 700;
+    color: #7070a0;
+  }
+
+  .copied-toast {
+    position: fixed;
+    bottom: 28px; left: 50%;
+    transform: translateX(-50%) translateY(14px);
+    background: #2a2a4a;
+    color: #c0c0e0;
+    font-size: 13px;
+    padding: 10px 24px;
+    border-radius: 30px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s, transform 0.22s;
+  }
+  .copied-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="title">🔐 TOTP 验证码生成器</div>
+
+  <label>Secret Key（Base32 种子）</label>
+  <input type="text" id="secretInput" placeholder="粘贴种子，自动生成…" autocomplete="off" spellcheck="false">
+
+  <div class="code-area" onclick="copyCode()">
+    <span class="copy-hint">点击复制</span>
+    <span class="code-digits idle" id="codeDisplay">— — —</span>
+    <div class="ring-wrap">
+      <svg width="54" height="54" viewBox="0 0 54 54">
+        <circle class="ring-bg" cx="27" cy="27" r="22" fill="none" stroke-width="4"/>
+        <circle class="ring-fg" id="ringFg" cx="27" cy="27" r="22" fill="none" stroke-width="4"
+          stroke-dasharray="138.2" stroke-dashoffset="138.2"/>
+      </svg>
+      <div class="ring-text" id="ringText">—</div>
+    </div>
+  </div>
+</div>
+
+<div class="copied-toast" id="toast">✓ 已复制到剪贴板</div>
+
+<script>
+const CIRC = 2 * Math.PI * 22;
+
+function base32Decode(s) {
+  const alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  s = s.toUpperCase().replace(/[\s=]/g, '');
+  let bits = 0, val = 0;
+  const out = [];
+  for (const c of s) {
+    const i = alpha.indexOf(c);
+    if (i < 0) throw new Error('invalid');
+    val = (val << 5) | i;
+    bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((val >>> bits) & 0xff); }
+  }
+  return new Uint8Array(out);
+}
+
+async function hmacSha1(keyBytes, msgBytes) {
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, msgBytes));
+}
+
+async function totp(secret) {
+  const key = base32Decode(secret);
+  const T = Math.floor(Date.now() / 1000 / 30);
+  const msg = new Uint8Array(8);
+  let t = T;
+  for (let i = 7; i >= 0; i--) { msg[i] = t & 0xff; t >>>= 8; }
+  const hmac = await hmacSha1(key, msg);
+  const offset = hmac[19] & 0xf;
+  const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset+1] << 16 | hmac[offset+2] << 8 | hmac[offset+3]) % 1000000;
+  return String(code).padStart(6, '0');
+}
+
+async function refresh() {
+  const secret = document.getElementById('secretInput').value.trim();
+  const codeEl = document.getElementById('codeDisplay');
+  const ringFg = document.getElementById('ringFg');
+  const ringText = document.getElementById('ringText');
+  const rem = 30 - (Math.floor(Date.now() / 1000) % 30);
+  const warn = rem <= 7;
+
+  if (!secret) {
+    codeEl.textContent = '— — —';
+    codeEl.className = 'code-digits idle';
+    ringFg.style.strokeDashoffset = CIRC;
+    ringFg.className = 'ring-fg';
+    ringText.textContent = '—';
+    return;
+  }
+
+  try {
+    const code = await totp(secret);
+    codeEl.textContent = code.slice(0,3) + ' ' + code.slice(3);
+    codeEl.className = 'code-digits ' + (warn ? 'warning' : 'fresh');
+    ringFg.className = 'ring-fg' + (warn ? ' warning' : '');
+    ringFg.style.strokeDashoffset = CIRC * (1 - rem / 30);
+    ringText.textContent = rem;
+  } catch(e) {
+    codeEl.textContent = '种子格式有误';
+    codeEl.className = 'code-digits error';
+    ringFg.style.strokeDashoffset = CIRC;
+    ringText.textContent = '—';
+  }
+}
+
+function copyCode() {
+  const raw = document.getElementById('codeDisplay').textContent.replace(/\s/g, '');
+  if (!raw || raw.includes('—') || raw.includes('误')) return;
+  navigator.clipboard.writeText(raw).then(() => {
+    const t = document.getElementById('toast');
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1600);
+  });
+}
+
+document.getElementById('secretInput').addEventListener('input', refresh);
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>
